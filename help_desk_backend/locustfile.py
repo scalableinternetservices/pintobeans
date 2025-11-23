@@ -6,20 +6,37 @@ User personas:
 2. ActiveUser - Creates conversations, sends messages, browses (70% of users)
 3. ExpertUser - Responds to messages, manages queue (15% of users)
 4. NewUser - Registers for the first time (5% of users)
+
+Debug mode: Set DEBUG_MODE = True to see all HTTP requests and responses
 """
 
 import random
 import threading
 from datetime import datetime
-from locust import HttpUser, task, between
+from locust import HttpUser, task, between, events
 
 
 # Configuration
 MAX_USERS = 10000
 CONVERSATION_TOPICS = ["Technical Support", "Account Help", "Billing Question", "Feature Request", "Bug Report"]
+DEBUG_MODE = True  # Set to False to reduce logging
+
+
+# Debug event listeners
+@events.request.add_listener
+def on_request(request_type, name, response_time, response_length, exception, **kwargs):
+    if DEBUG_MODE and exception:
+        print(f"REQUEST FAILED: {request_type} {name} - Exception: {exception}")
+
+
+@events.request.add_listener  
+def on_request_success(request_type, name, response_time, response_length, **kwargs):
+    if DEBUG_MODE:
+        print(f"REQUEST OK: {request_type} {name} - {response_time}ms")
 
 
 class UserNameGenerator:
+    """Generates deterministic but distributed usernames using prime number stepping."""
     PRIME_NUMBERS = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]
 
     def __init__(self, max_users=MAX_USERS, seed=None, prime_number=None):
@@ -34,6 +51,7 @@ class UserNameGenerator:
 
 
 class UserStore:
+    """Thread-safe storage for user credentials and metadata."""
     def __init__(self):
         self.used_usernames = {}
         self.expert_usernames = {}
@@ -105,43 +123,93 @@ class ChatBackend:
     
     def login(self, username, password):
         """Login an existing user."""
-        response = self.client.post(
-            "/auth/login",
-            json={"username": username, "password": password},
-            name="/auth/login"
-        )
-        if response.status_code == 200:
-            data = response.json()
-            user_data = data.get("user", {})
-            return user_store.store_user(
-                username, 
-                data.get("token"), 
-                user_data.get("id"),
-                user_data.get("is_expert", False)
-            )
+        try:
+            with self.client.post(
+                "/auth/login",
+                json={
+                    "user": {
+                        "username": username, 
+                        "password": password
+                    }
+                },
+                name="/auth/login",
+                catch_response=True
+            ) as response:
+                if response.status_code == 200:
+                    data = response.json()
+                    user_data = data.get("user", {})
+                    token = data.get("token")
+                    user_id = user_data.get("id")
+                    
+                    if not token or not user_id:
+                        print(f"Login response missing token or user_id for {username}")
+                        print(f"Response: {response.text[:300]}")
+                        response.failure("Missing token or user_id")
+                        return None
+                    
+                    response.success()
+                    return user_store.store_user(
+                        username, 
+                        token, 
+                        user_id,
+                        user_data.get("is_expert", False)
+                    )
+                else:
+                    # User doesn't exist yet, this is expected
+                    response.failure(f"Login failed (expected for new users): {response.status_code}")
+        except Exception as e:
+            print(f"Login exception for {username}: {e}")
+            import traceback
+            traceback.print_exc()
         return None
         
     def register(self, username, password, is_expert=False):
         """Register a new user."""
-        response = self.client.post(
-            "/auth/register",
-            json={
-                "username": username, 
-                "password": password,
-                "email": f"{username}@loadtest.com",
-                "is_expert": is_expert
-            },
-            name="/auth/register"
-        )
-        if response.status_code == 201:
-            data = response.json()
-            user_data = data.get("user", {})
-            return user_store.store_user(
-                username, 
-                data.get("token"), 
-                user_data.get("id"),
-                is_expert
-            )
+        try:
+            with self.client.post(
+                "/auth/register",
+                json={
+                    "user": {
+                        "username": username, 
+                        "password": password,
+                        "password_confirmation": password
+                    }
+                },
+                name="/auth/register",
+                catch_response=True
+            ) as response:
+                if response.status_code == 201 or response.status_code == 200:
+                    try:
+                        data = response.json()
+                        user_data = data.get("user", {})
+                        token = data.get("token")
+                        user_id = user_data.get("id")
+                        
+                        if not token or not user_id:
+                            print(f"Registration response missing token or user_id for {username}")
+                            print(f"Response: {response.text[:300]}")
+                            response.failure("Missing token or user_id")
+                            return None
+                        
+                        response.success()
+                        return user_store.store_user(
+                            username, 
+                            token, 
+                            user_id,
+                            is_expert
+                        )
+                    except Exception as e:
+                        print(f"Registration response parsing failed for {username}: {e}")
+                        print(f"Response text: {response.text[:500]}")
+                        response.failure(f"Failed to parse registration response")
+                else:
+                    print(f"Registration failed for {username}: {response.status_code}")
+                    print(f"Response body: {response.text[:500]}")
+                    response.failure(f"Registration failed: {response.status_code}")
+        except Exception as e:
+            print(f"Registration exception for {username}: {e}")
+            import traceback
+            traceback.print_exc()
         return None
 
     def check_conversation_updates(self, user):
@@ -180,9 +248,9 @@ class ChatBackend:
             return True  # Skip for non-experts
             
         response = self.client.get(
-            "/api/expert/queue",
+            "/api/expert-queue/updates",
             headers=auth_headers(user.get("auth_token")),
-            name="/api/expert/queue"
+            name="/api/expert-queue/updates"
         )
         
         return response.status_code == 200
@@ -190,34 +258,39 @@ class ChatBackend:
     def create_conversation(self, user, topic=None):
         """Create a new conversation."""
         response = self.client.post(
-            "/api/conversations",
+            "/conversations",
             json={
-                "user_id": user.get("user_id"),
-                "topic": topic or random.choice(CONVERSATION_TOPICS)
+                "title": topic or random.choice(CONVERSATION_TOPICS),
+                "status": "waiting"
             },
             headers=auth_headers(user.get("auth_token")),
-            name="/api/conversations"
+            name="/conversations"
         )
         
         if response.status_code == 201:
             data = response.json()
-            conversation = data.get("conversation", {})
+            # Response is the conversation object directly (not nested under 'conversation')
             return user_store.store_conversation(
-                conversation.get("id"),
+                data.get("id"),
                 user.get("user_id")
             )
+        else:
+            if DEBUG_MODE:
+                print(f"Conversation creation failed: {response.status_code}")
+                print(f"Response: {response.text[:200]}")
         return None
 
     def send_message(self, user, conversation_id, message_text):
         """Send a message to a conversation."""
         response = self.client.post(
-            f"/api/conversations/{conversation_id}/messages",
+            "/messages",
             json={
+                "conversation_id": conversation_id,
                 "user_id": user.get("user_id"),
                 "message": message_text
             },
             headers=auth_headers(user.get("auth_token")),
-            name="/api/conversations/:id/messages"
+            name="/messages"
         )
         
         return response.status_code == 201
@@ -225,9 +298,9 @@ class ChatBackend:
     def get_conversation_messages(self, user, conversation_id):
         """Retrieve messages from a conversation."""
         response = self.client.get(
-            f"/api/conversations/{conversation_id}/messages",
+            f"/conversations/{conversation_id}/messages",
             headers=auth_headers(user.get("auth_token")),
-            name="/api/conversations/:id/messages [GET]"
+            name="/conversations/:id/messages"
         )
         
         return response.status_code == 200
@@ -235,14 +308,20 @@ class ChatBackend:
     def list_conversations(self, user):
         """List user's conversations."""
         response = self.client.get(
-            "/api/conversations",
+            "/conversations",
             params={"userId": user.get("user_id")},
             headers=auth_headers(user.get("auth_token")),
-            name="/api/conversations [LIST]"
+            name="/conversations"
         )
         
         if response.status_code == 200:
-            return response.json().get("conversations", [])
+            # Rails returns array directly, not nested under 'conversations'
+            conversations = response.json()
+            if isinstance(conversations, list):
+                return conversations
+            else:
+                # Fallback if format is different
+                return conversations.get("conversations", [])
         return []
 
 
@@ -260,17 +339,39 @@ class IdleUser(HttpUser, ChatBackend):
         self.last_check_time = None
         username = user_name_generator.generate_username()
         password = username
-        self.user = self.login(username, password) or self.register(username, password)
-        if not self.user:
-            raise Exception(f"Failed to login or register user {username}")
+        
+        # Try to login first (user might already exist from previous test runs)
+        try:
+            self.user = self.login(username, password)
+            if not self.user:
+                # User doesn't exist, register them
+                self.user = self.register(username, password)
+            
+            if not self.user:
+                print(f"FAILED: Could not login or register user {username}")
+                print(f"Check your backend server at the host URL")
+                self.environment.runner.quit()
+                return
+            
+            print(f"SUCCESS: IdleUser {username} ready (ID: {self.user.get('user_id')}, Token: {self.user.get('auth_token')[:20] if self.user.get('auth_token') else 'None'}...)")
+        except Exception as e:
+            print(f"ERROR in on_start for {username}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.environment.runner.quit()
 
     @task
     def poll_for_updates(self):
         """Poll for all types of updates."""
-        self.check_conversation_updates(self.user)
-        self.check_message_updates(self.user)
-        self.check_expert_queue_updates(self.user)
-        self.last_check_time = datetime.utcnow()
+        try:
+            self.check_conversation_updates(self.user)
+            self.check_message_updates(self.user)
+            self.check_expert_queue_updates(self.user)
+            self.last_check_time = datetime.utcnow()
+        except Exception as e:
+            print(f"ERROR in poll_for_updates: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 class ActiveUser(HttpUser, ChatBackend):
@@ -287,42 +388,83 @@ class ActiveUser(HttpUser, ChatBackend):
         self.last_check_time = None
         username = user_name_generator.generate_username()
         password = username
-        self.user = self.login(username, password) or self.register(username, password)
-        if not self.user:
-            raise Exception(f"Failed to login or register user {username}")
-        self.my_conversations = []
+        
+        try:
+            # Check if user already exists in our store (from previous spawns)
+            existing_user = None
+            with user_store.username_lock:
+                existing_user = user_store.used_usernames.get(username)
+            
+            if existing_user:
+                # User was already registered by another instance, try login
+                self.user = self.login(username, password)
+            else:
+                # New user, register directly without trying to login first
+                self.user = self.register(username, password)
+            
+            # If both failed, try the other method as fallback
+            if not self.user:
+                if existing_user:
+                    self.user = self.register(username, password)
+                else:
+                    self.user = self.login(username, password)
+            
+            if not self.user:
+                print(f"FAILED: ActiveUser {username} could not authenticate")
+                self.environment.runner.quit()
+                return
+                
+            self.my_conversations = []
+            print(f"SUCCESS: ActiveUser {username} ready")
+        except Exception as e:
+            print(f"ERROR in ActiveUser.on_start for {username}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.environment.runner.quit()
 
     @task(5)
     def browse_conversations(self):
         """Browse and list existing conversations."""
-        self.my_conversations = self.list_conversations(self.user)
+        try:
+            self.my_conversations = self.list_conversations(self.user)
+        except Exception as e:
+            print(f"ERROR in browse_conversations: {e}")
 
     @task(3)
     def create_new_conversation(self):
         """Create a new conversation with a random topic."""
-        conversation = self.create_conversation(self.user)
-        if conversation:
-            self.my_conversations.append(conversation)
+        try:
+            conversation = self.create_conversation(self.user)
+            if conversation:
+                self.my_conversations.append(conversation)
+        except Exception as e:
+            print(f"ERROR in create_new_conversation: {e}")
 
     @task(10)
     def send_message_to_conversation(self):
         """Send a message to an existing conversation."""
-        # Try to use own conversation first, fallback to any conversation
-        conversation = user_store.get_random_conversation(self.user.get("user_id"))
-        if not conversation and self.my_conversations:
-            conversation = random.choice(self.my_conversations)
-        
-        if conversation:
-            messages = [
-                "Hi, I need help with my account",
-                "Can you assist me with this issue?",
-                "Thank you for your help",
-                "I'm experiencing a problem",
-                "Could you clarify this for me?",
-                "This is urgent, please respond",
-                "I have a follow-up question"
-            ]
-            self.send_message(self.user, conversation.get("id"), random.choice(messages))
+        try:
+            # Try to use own conversation first, fallback to any conversation
+            conversation = user_store.get_random_conversation(self.user.get("user_id"))
+            if not conversation and self.my_conversations:
+                conversation = random.choice(self.my_conversations)
+            
+            if conversation:
+                messages = [
+                    "Hi, I need help with my account",
+                    "Can you assist me with this issue?",
+                    "Thank you for your help",
+                    "I'm experiencing a problem",
+                    "Could you clarify this for me?",
+                    "This is urgent, please respond",
+                    "I have a follow-up question"
+                ]
+                self.send_message(self.user, conversation.get("id"), random.choice(messages))
+            else:
+                # No conversations available, create one first
+                self.create_new_conversation()
+        except Exception as e:
+            print(f"ERROR in send_message_to_conversation: {e}")
 
     @task(7)
     def read_messages(self):
@@ -356,35 +498,82 @@ class ExpertUser(HttpUser, ChatBackend):
         self.last_check_time = None
         username = f"expert_{user_name_generator.generate_username()}"
         password = username
-        self.user = self.login(username, password) or self.register(username, password, is_expert=True)
-        if not self.user:
-            raise Exception(f"Failed to login or register expert {username}")
-        self.assigned_conversations = []
+        
+        try:
+            # Check if expert already exists in our store
+            existing_user = None
+            with user_store.username_lock:
+                existing_user = user_store.used_usernames.get(username)
+            
+            if existing_user:
+                # Expert was already registered, try login
+                self.user = self.login(username, password)
+            else:
+                # New expert, register directly
+                self.user = self.register(username, password, is_expert=True)
+            
+            # Fallback to the other method if needed
+            if not self.user:
+                if existing_user:
+                    self.user = self.register(username, password, is_expert=True)
+                else:
+                    self.user = self.login(username, password)
+            
+            if not self.user:
+                print(f"FAILED: ExpertUser {username} could not authenticate")
+                self.environment.runner.quit()
+                return
+                
+            self.assigned_conversations = []
+            print(f"SUCCESS: ExpertUser {username} ready")
+        except Exception as e:
+            print(f"ERROR in ExpertUser.on_start for {username}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.environment.runner.quit()
 
     @task(8)
     def check_expert_queue(self):
         """Check for new conversations in the expert queue."""
-        self.check_expert_queue_updates(self.user)
+        response = self.client.get(
+            "/expert/queue",
+            headers=auth_headers(self.user.get("auth_token")),
+            name="/expert/queue"
+        )
+        return response.status_code == 200
 
     @task(5)
     def claim_conversation(self):
         """Claim an unassigned conversation from the queue."""
-        response = self.client.post(
-            "/api/expert/queue/claim",
+        # First get the queue to find a conversation ID
+        queue_response = self.client.get(
+            "/expert/queue",
             headers=auth_headers(self.user.get("auth_token")),
-            name="/api/expert/queue/claim"
+            name="/expert/queue [for claiming]"
         )
         
-        if response.status_code == 200:
-            data = response.json()
-            conversation = data.get("conversation", {})
-            if conversation:
-                conv_data = user_store.store_conversation(
-                    conversation.get("id"),
-                    conversation.get("user_id"),
-                    self.user.get("user_id")
+        if queue_response.status_code == 200:
+            queue_data = queue_response.json()
+            conversations = queue_data.get("conversations", [])
+            
+            if conversations:
+                # Pick a random conversation to claim
+                conversation = random.choice(conversations)
+                conversation_id = conversation.get("id")
+                
+                response = self.client.post(
+                    f"/expert/conversations/{conversation_id}/claim",
+                    headers=auth_headers(self.user.get("auth_token")),
+                    name="/expert/conversations/:id/claim"
                 )
-                self.assigned_conversations.append(conv_data)
+                
+                if response.status_code == 200:
+                    conv_data = user_store.store_conversation(
+                        conversation_id,
+                        conversation.get("user_id"),
+                        self.user.get("user_id")
+                    )
+                    self.assigned_conversations.append(conv_data)
 
     @task(10)
     def respond_to_message(self):
@@ -437,9 +626,20 @@ class NewUser(HttpUser, ChatBackend):
         """Register a completely new user."""
         self.username = f"new_{user_name_generator.generate_username()}"
         self.password = self.username
-        self.user = self.register(self.username, self.password)
-        if not self.user:
-            raise Exception(f"Failed to register new user {self.username}")
+        
+        try:
+            # NewUser always registers directly (never tries to login first)
+            self.user = self.register(self.username, self.password)
+            if not self.user:
+                print(f"FAILED: NewUser {self.username} registration failed")
+                self.environment.runner.quit()
+                return
+            print(f"SUCCESS: NewUser {self.username} registered")
+        except Exception as e:
+            print(f"ERROR in NewUser.on_start for {self.username}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.environment.runner.quit()
 
     @task(1)
     def onboarding_flow(self):

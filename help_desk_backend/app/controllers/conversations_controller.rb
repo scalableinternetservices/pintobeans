@@ -32,6 +32,9 @@ class ConversationsController < ApplicationController
         conversation.last_message_at = Time.current
 
         if conversation.save
+            # Trigger auto-assignment in background to avoid blocking the request
+            AutoAssignExpertJob.perform_later(conversation.id)
+            
             render json: conversation_response(conversation), status: :created
         else
             render json: { errors: conversation.errors.full_messages }, status: :unprocessable_entity

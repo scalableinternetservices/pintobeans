@@ -19,6 +19,7 @@ Rails.application.routes.draw do
   # Conversations
   resources :conversations, only: [:index, :show, :create] do
     resources :messages, only: [:index], controller: "messages"
+    post 'auto_assign', to: 'expert_assignments#auto_assign'
   end
 
   # Messages

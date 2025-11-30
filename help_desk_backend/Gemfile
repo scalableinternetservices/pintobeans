@@ -35,6 +35,9 @@ gem "jwt" # For JSON Web Token authentication (if you choose JWT over sessions)
 gem 'bcrypt', '~> 3.1.18' # Added for password things
 
 gem "activerecord-session_store" # For database-backed session storage
+
+gem "aws-sdk-bedrockruntime" # For LLM integration with Amazon Bedrock
+
 group :test do
    gem "mocha"
 end

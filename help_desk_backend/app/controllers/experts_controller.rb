@@ -28,7 +28,8 @@ class ExpertsController < ApplicationController
           assignedExpertUsername: convo.assigned_expert&.username,
           createdAt: convo.created_at.iso8601,
           updatedAt: convo.updated_at.iso8601,
-          lastMessageAt: convo.last_message_at&.iso8601
+          lastMessageAt: convo.last_message_at&.iso8601,
+          summary: convo.summary
         }
       end,
       assignedConversations: assigned.map do |convo|
@@ -42,7 +43,8 @@ class ExpertsController < ApplicationController
           assignedExpertUsername: convo.assigned_expert&.username,
           createdAt: convo.created_at.iso8601,
           updatedAt: convo.updated_at.iso8601,
-          lastMessageAt: convo.last_message_at&.iso8601
+          lastMessageAt: convo.last_message_at&.iso8601,
+          summary: convo.summary
         }
       end
     }
@@ -62,8 +64,8 @@ class ExpertsController < ApplicationController
     end
 
     #user = User.find(params[:expert_profile.user_id])
-    
-    # update expert's conversation_id to the id of the conversation being claimed 
+
+    # update expert's conversation_id to the id of the conversation being claimed
     conversation.update!(
       assigned_expert: @expert_profile.user,
       status: "active"
@@ -118,7 +120,8 @@ class ExpertsController < ApplicationController
     render json: {
       id: profile.id,
       bio: profile.bio,
-      knowledgeBaseLinks: profile.knowledge_base_links.presence || []
+      knowledgeBaseLinks: profile.knowledge_base_links.presence || [],
+      faq: profile.faq.presence || []
     }
   end
 
@@ -135,7 +138,8 @@ class ExpertsController < ApplicationController
       render json: {
         id: @expert_profile.id,
         bio: @expert_profile.bio,
-        knowledgeBaseLinks: @expert_profile.knowledge_base_links.presence
+        knowledgeBaseLinks: @expert_profile.knowledge_base_links.presence,
+        faq: @expert_profile.faq.presence || []
       }
     else
       render json: { errors: @expert_profile.errors.full_messages }, status: :unprocessable_entity
@@ -177,7 +181,8 @@ class ExpertsController < ApplicationController
   def expert_profile_params
     params.require(:expert_profile).permit(
       :bio,
-      knowledge_base_links: []
+      knowledge_base_links: [],
+      faq: [:question, :answer]
     )
   end
 

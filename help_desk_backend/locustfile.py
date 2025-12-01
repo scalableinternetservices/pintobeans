@@ -14,6 +14,8 @@ import random
 import threading
 from datetime import datetime
 from locust import HttpUser, task, between, events
+from locust import LoadTestShape
+import time
 
 
 # Configuration
@@ -33,6 +35,34 @@ def on_request(request_type, name, response_time, response_length, exception, **
 def on_request_success(request_type, name, response_time, response_length, **kwargs):
     if DEBUG_MODE:
         print(f"REQUEST OK: {request_type} {name} - {response_time}ms")
+
+class StepLoadShape(LoadTestShape):
+    # dynamic arrival rate plan
+    steps = [
+        (60, 2),
+        (60, 8),
+        (60, 32),
+        (60, 64),
+        (60, 128),
+        (60, 256),
+        (60, 512),
+        (60, 1024),
+        (60, 2048),
+        (60, 4096),
+        (60, 8192),
+    ]
+
+    def tick(self):
+        run_time = self.get_run_time()
+        elapsed = 0
+
+        for step_duration, spawn_rate in self.steps:
+            elapsed += step_duration
+            if run_time < elapsed:
+                target_users = 10000
+                return (target_users, spawn_rate)
+        
+        return None
 
 
 class UserNameGenerator:

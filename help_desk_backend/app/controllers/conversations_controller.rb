@@ -32,22 +32,9 @@ class ConversationsController < ApplicationController
         conversation.last_message_at = Time.current
 
         if conversation.save
-            # Auto-assign to best expert using LLM
-            assignment_service = ExpertAssignmentService.new(conversation)
-            best_expert = assignment_service.assign_best_expert
-
-            if best_expert
-                conversation.update(assigned_expert: best_expert, status: "active")
-
-                # Create expert assignment record
-                ExpertAssignment.create!(
-                    conversation: conversation,
-                    expert_id: best_expert.expert_profile.id,
-                    status: "active",
-                    assigned_at: Time.current
-                )
-            end
-
+            # Trigger auto-assignment in background to avoid blocking the request
+            AutoAssignExpertJob.perform_later(conversation.id)
+            
             render json: conversation_response(conversation), status: :created
         else
             render json: { errors: conversation.errors.full_messages }, status: :unprocessable_entity

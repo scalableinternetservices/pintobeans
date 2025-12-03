@@ -32,6 +32,9 @@ class ConversationsController < ApplicationController
         conversation.last_message_at = Time.current
 
         if conversation.save
+            # Trigger auto-assignment in background to avoid blocking the request
+            AutoAssignExpertJob.perform_later(conversation.id)
+            
             render json: conversation_response(conversation), status: :created
         else
             render json: { errors: conversation.errors.full_messages }, status: :unprocessable_entity
@@ -45,6 +48,12 @@ class ConversationsController < ApplicationController
     end
 
     def conversation_response(conversation)
+        # Generate or queue summary generation if needed
+        if conversation.summary.blank? && conversation.messages.count > 0
+            GenerateSummaryJob.perform_later_or_now(conversation.id)
+            conversation.reload
+        end
+
         {
             id: conversation.id.to_s,
             title: conversation.title,
@@ -56,7 +65,8 @@ class ConversationsController < ApplicationController
             createdAt: conversation.created_at.iso8601,
             updatedAt: conversation.updated_at.iso8601,
             lastMessageAt: conversation.last_message_at&.iso8601,
-            unreadCount: conversation.unread_count_for(@current_user)
+            unreadCount: conversation.unread_count_for(@current_user),
+            summary: conversation.summary
         }
     end
 end

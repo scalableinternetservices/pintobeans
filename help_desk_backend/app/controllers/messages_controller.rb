@@ -2,11 +2,11 @@ class MessagesController < ApplicationController
   # All actions require JWT authentication via Authenticatable concern
   # JWT token should be provided in Authorization header: "Bearer <token>"
   # The @current_user is set by Authenticatable#authenticate_user! which uses JwtService.decode
-  
+
   # GET /conversations/:conversation_id/messages
   def index
     conversation = Conversation.find_by(id: params[:conversation_id])
-    
+
     unless conversation
       return render json: { error: "(a) Conversation not found" }, status: :not_found
     end
@@ -42,7 +42,7 @@ class MessagesController < ApplicationController
     end
     # Determine the sender's role based on the conversation
     current_role = conversation.initiator == @current_user ? "initiator" : "expert"
-    
+
     message = Message.new(
       conversation: conversation,
       sender: @current_user,
@@ -52,6 +52,28 @@ class MessagesController < ApplicationController
     )
 
     if message.save
+      # If message is from initiator and expert is assigned, try auto-response
+      if current_role == "initiator" && conversation.assigned_expert
+        auto_response_service = AutoResponseService.new(conversation, message.content)
+        auto_response = auto_response_service.generate_response
+
+        if auto_response.present?
+          # Create automatic response from expert
+          auto_message = Message.create(
+            conversation: conversation,
+            sender: conversation.assigned_expert,
+            sender_role: "expert",
+            content: auto_response,
+            is_read: false
+          )
+        end
+      end
+
+      # Trigger summary generation after 3+ messages
+      if conversation.messages.count >= 3 && conversation.summary.blank?
+        GenerateSummaryJob.perform_later_or_now(conversation.id)
+      end
+
       render json: message_response(message), status: :created
     else
       render json: { errors: message.errors.full_messages }, status: :unprocessable_entity

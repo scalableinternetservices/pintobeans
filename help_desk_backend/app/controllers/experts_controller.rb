@@ -12,20 +12,16 @@ class ExpertsController < ApplicationController
     waiting = Conversation
                 .where(assigned_expert: nil, status: "waiting")
                 .includes(:initiator, :assigned_expert)
+                .to_a
 
     assigned = Conversation
                 .where(assigned_expert: @expert_profile.user_id)
                 .includes(:initiator, :assigned_expert)
-
-    waiting_json = Rails.cache.fetch(["waiting_conversations", waiting.cache_key_with_version]) do
-      waiting.map { |c| serialize_conversation(c) }
-    end
-
-    assigned_json = assigned.map { |c| serialize_conversation(c) } # assigned should NOT be cached per-expert
+                .to_a
 
     render json: {
-      waitingConversations: waiting_json,
-      assignedConversations: assigned_json
+      waitingConversations: waiting.map { |c| serialize_conversation(c) },
+      assignedConversations: assigned.map { |c| serialize_conversation(c) }
     }
   end
 

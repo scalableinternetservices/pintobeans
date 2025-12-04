@@ -9,44 +9,41 @@ class ExpertsController < ApplicationController
 
   # GET /expert/queue: get the expert queue (waiting and assigned conversations)
   def queue
+    waiting = Conversation
+                .where(assigned_expert: nil, status: "waiting")
+                .includes(:initiator, :assigned_expert)
 
-    # get all waiting conversations (no expert assigned)
-    waiting = Conversation.where(assigned_expert: nil, status: "waiting")
+    assigned = Conversation
+                .where(assigned_expert: @expert_profile.user_id)
+                .includes(:initiator, :assigned_expert)
 
-    # get all assigned conversations
-    assigned = Conversation.where(assigned_expert: @expert_profile.user_id)
+    waiting_json = Rails.cache.fetch(["waiting_conversations", waiting.cache_key_with_version]) do
+      waiting.map { |c| serialize_conversation(c) }
+    end
+
+    assigned_json = assigned.map { |c| serialize_conversation(c) } # assigned should NOT be cached per-expert
 
     render json: {
-      waitingConversations: waiting.map do |convo|
-        {
-          id: convo.id.to_s,
-          title: convo.title,
-          status: convo.status,
-          questionerId: convo.initiator_id.to_s,
-          questionerUsername: convo.initiator.username,
-          assignedExpertId: convo.assigned_expert_id&.to_s,
-          assignedExpertUsername: convo.assigned_expert&.username,
-          createdAt: convo.created_at.iso8601,
-          updatedAt: convo.updated_at.iso8601,
-          lastMessageAt: convo.last_message_at&.iso8601,
-          summary: convo.summary
-        }
-      end,
-      assignedConversations: assigned.map do |convo|
-        {
-          id: convo.id.to_s,
-          title: convo.title,
-          status: convo.status,
-          questionerId: convo.initiator_id.to_s,
-          questionerUsername: convo.initiator.username,
-          assignedExpertId: convo.assigned_expert_id&.to_s,
-          assignedExpertUsername: convo.assigned_expert&.username,
-          createdAt: convo.created_at.iso8601,
-          updatedAt: convo.updated_at.iso8601,
-          lastMessageAt: convo.last_message_at&.iso8601,
-          summary: convo.summary
-        }
-      end
+      waitingConversations: waiting_json,
+      assignedConversations: assigned_json
+    }
+  end
+
+
+  private
+
+  def serialize_conversation(convo)
+    {
+      id: convo.id.to_s,
+      title: convo.title,
+      status: convo.status,
+      questionerId: convo.initiator_id.to_s,
+      questionerUsername: convo.initiator.username,
+      assignedExpertId: convo.assigned_expert_id&.to_s,
+      assignedExpertUsername: convo.assigned_expert&.username,
+      createdAt: convo.created_at.iso8601,
+      updatedAt: convo.updated_at.iso8601,
+      lastMessageAt: convo.last_message_at&.iso8601
     }
   end
 

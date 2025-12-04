@@ -32,8 +32,11 @@ class ConversationsController < ApplicationController
         conversation.last_message_at = Time.current
 
         if conversation.save
-            # Trigger auto-assignment in background to avoid blocking the request
-            AutoAssignExpertJob.perform_later(conversation.id)
+            # Trigger auto-assignment synchronously
+            AutoAssignExpertJob.perform_now(conversation.id)
+            
+            # Reload conversation to get the assignment result
+            conversation.reload
             
             render json: conversation_response(conversation), status: :created
         else

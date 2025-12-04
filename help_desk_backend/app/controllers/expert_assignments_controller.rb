@@ -15,13 +15,18 @@ class ExpertAssignmentsController < ApplicationController
       return
     end
 
-    # Trigger auto-assignment in background
-    AutoAssignExpertJob.perform_later(conversation.id)
+    # Trigger auto-assignment synchronously
+    AutoAssignExpertJob.perform_now(conversation.id)
+    
+    # Reload conversation to get the assignment result
+    conversation.reload
     
     render json: {
       success: true,
-      message: "Auto-assignment job has been queued. The conversation will be assigned shortly."
-    }, status: :accepted
+      message: "Auto-assignment completed.",
+      assignedExpertId: conversation.assigned_expert_id&.to_s,
+      assignedExpertUsername: conversation.assigned_expert&.username
+    }, status: :ok
   end
 
   private

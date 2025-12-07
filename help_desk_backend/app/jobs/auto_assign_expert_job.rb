@@ -3,7 +3,11 @@
 class AutoAssignExpertJob < ApplicationJob
   queue_as :default
 
-  # Automatically assigns a conversation to the most suitable expert in the background
+  # Set to true for synchronous execution (blocks request but works without background workers)
+  # Set to false for async execution (requires solid_queue worker running)
+  SYNCHRONOUS_MODE = true
+
+  # Automatically assigns a conversation to the most suitable expert
   # This job is triggered when a new conversation is created
   #
   # @param conversation_id [Integer] The ID of the conversation to assign
@@ -35,6 +39,15 @@ class AutoAssignExpertJob < ApplicationJob
     # Log error but don't fail the job - the conversation is still valid
     Rails.logger.error("AutoAssignExpertJob error for conversation #{conversation_id}: #{e.message}")
     Rails.logger.error(e.backtrace.join("\n"))
+  end
+
+  # Convenience method to handle sync/async execution
+  def self.perform_later_or_now(conversation_id)
+    if SYNCHRONOUS_MODE
+      perform_now(conversation_id)
+    else
+      perform_later(conversation_id)
+    end
   end
 end
 

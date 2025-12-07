@@ -9,18 +9,28 @@ class ExpertsController < ApplicationController
 
   # GET /expert/queue: get the expert queue (waiting and assigned conversations)
   def queue
-    waiting = Conversation
-                .where(assigned_expert: nil, status: "waiting")
-                .includes(:initiator, :assigned_expert)
-                .to_a
+    cache_key = [
+      "expert_queue_waiting",
+      Conversation.where(assigned_expert_id: nil, status: "waiting").maximum(:updated_at)
+    ].compact.join("/")
 
+    waiting_conversations = Rails.cache.fetch(cache_key, expires_in: 10.seconds) do
+      # Only runs on cache MISS
+      Conversation
+        .where(assigned_expert_id: nil, status: "waiting")
+        .includes(:initiator)
+        .to_a
+        .map { |c| serialize_conversation(c) }
+    end
+
+    # Always fetch assigned conversations fresh (not cached)
     assigned = Conversation
-                .where(assigned_expert: @expert_profile.user_id)
+                .where(assigned_expert_id: @expert_profile.user_id)
                 .includes(:initiator, :assigned_expert)
                 .to_a
 
     render json: {
-      waitingConversations: waiting.map { |c| serialize_conversation(c) },
+      waitingConversations: waiting_conversations,
       assignedConversations: assigned.map { |c| serialize_conversation(c) }
     }
   end

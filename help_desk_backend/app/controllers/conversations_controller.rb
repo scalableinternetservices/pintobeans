@@ -60,8 +60,12 @@ class ConversationsController < ApplicationController
             status: conversation.status,
             questionerId: conversation.initiator_id.to_s,
             questionerUsername: conversation.initiator.username,
+            questionerUsernameWithId: "#{conversation.initiator.username}##{conversation.initiator.id}",
             assignedExpertId: conversation.assigned_expert_id&.to_s,
             assignedExpertUsername: conversation.assigned_expert&.username,
+            assignedExpertUsernameWithId: (
+             conversation.assigned_expert ? "#{conversation.assigned_expert.username}##{conversation.assigned_expert.id}" : nil
+         ),
             createdAt: conversation.created_at.iso8601,
             updatedAt: conversation.updated_at.iso8601,
             lastMessageAt: conversation.last_message_at&.iso8601,
